@@ -1524,3 +1524,103 @@ Hasil:
 
   
 Script: scripts/soal12.sh, dijalankan di node utahime (10.86.1.2).
+
+### SOAL 13
+
+Diminta: Mengonfigurasi MariaDB Master-Slave Replication antara node yaga (10.86.4.8, Master) dan inumaki (10.86.4.9, Slave) menggunakan Global Transaction Identifier (GTID) berbasis string (slave_pos) pada jaringan jujutsu.k45.com (Subnet 10.86.4.0/24). Serta membuktikan fungsionalitas replikasi secara real-time melalui status thread I/O dan SQL slave.
+
+Langkah-Langkah Pengerjaan & Eksekusi Script
+Script otomatisasi ini dibagi menjadi dua berkas terpisah karena dijalankan pada dua node yang berbeda: scripts/soal13_master.sh di node yaga dan scripts/soal13_slave.sh di node inumaki.
+
+Langkah 1, Membuat dan Menjalankan Script Otomatisasi di Master (yaga):
+Buat file script /root/soal13_master.sh di node yaga:
+
+Bash
+```
+cat > /root/soal13_master.sh << 'EOF'
+#!/bin/sh
+
+# 1. Konfigurasi master untuk binary log dan GTID
+cat > /etc/mysql/mariadb.conf.d/99-replication.cnf <<'EOT'
+[mysqld]
+server-id = 1
+log-bin = mysql-bin
+binlog-format = ROW
+gtid-domain-id = 1
+EOT
+
+# 2. Restart layanan MariaDB dan buat user replicator
+systemctl restart mariadb || (pkill mysqld; mysqld --user=mysql &)
+sleep 3
+
+mysql -u root <<'EOT'
+CREATE USER 'replicator'@'%' IDENTIFIED BY 'k45pass';
+GRANT REPLICATION SLAVE ON *.* TO 'replicator'@'%';
+FLUSH PRIVILEGES;
+EOT
+EOF
+
+sh /root/soal13_master.sh
+```
+
+Langkah 2, Membuat dan Menjalankan Script Otomatisasi di Slave (inumaki):
+Buat file script /root/soal13_slave.sh di node inumaki:
+
+Bash
+```
+cat > /root/soal13_slave.sh << 'EOF'
+#!/bin/sh
+
+# 1. Pastikan konfigurasi jaringan interface aktif
+ip addr replace 10.86.4.9/24 dev eth0
+ip link set eth0 up
+ip route replace default via 10.86.4.1
+
+# 2. Buat direktori socket dan konfigurasi slave
+mkdir -p /run/mysqld /etc/mysql/mariadb.conf.d/
+chown mysql:mysql /run/mysqld
+
+cat > /etc/mysql/mariadb.conf.d/99-replication.cnf <<'EOT'
+[mysqld]
+bind-address = 0.0.0.0
+server-id = 2
+relay-log = mysql-relay-bin
+EOT
+
+# 3. Jalankan daemon MariaDB
+mysqld --user=mysql &
+sleep 3
+
+# 4. Hubungkan Slave ke Master menggunakan GTID slave_pos
+mysql -u root <<'EOT'
+STOP SLAVE;
+RESET SLAVE ALL;
+CHANGE MASTER TO
+MASTER_HOST='10.86.4.8',
+MASTER_USER='replicator',
+MASTER_PASSWORD='k45pass',
+MASTER_USE_GTID=slave_pos;
+START SLAVE;
+EOT
+EOF
+
+sh /root/soal13_slave.sh
+```
+
+Verifikasi dan Pengujian Langkah 3, Menguji Status Replikasi dari Slave (inumaki):
+
+Bash
+```
+mysql -u root -e "SHOW SLAVE STATUS\G"
+```
+Hasil:
+
+<img width="432" height="607" alt="Screenshot 2026-10-13 at 23 45 35" src="https://github.com/user-attachments/assets/89038e90-2c7a-48ac-92fa-950364f4e148" />
+
+Master (yaga) berhasil mengaktifkan binary log dan membuat akun replicator dengan aman.
+
+Slave (inumaki) berhasil terhubung ke master menggunakan GTID slave_pos.
+
+Parameter Slave_IO_Running dan Slave_SQL_Running bernilai Yes, serta Seconds_Behind_Master bernilai 0 yang menandakan sinkronisasi data berjalan secara real-time tanpa kendala.
+
+Script: scripts/soal13_master.sh, dijalankan di node yaga (10.86.4.8) dan scripts/soal13_slave.sh, dijalankan di node inumaki (10.86.4.9).

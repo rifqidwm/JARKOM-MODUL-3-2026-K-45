@@ -1252,7 +1252,8 @@ ip route
 | Client memperoleh lease time tidak wajar ketika langkah diulang | Lease dari tahap sebelumnya masih tersimpan | Lease dikosongkan pada soal 2, 4, dan 5 |
 | kugisaki tidak muncul di `dhcpd.leases` | Host dengan `fixed-address` tidak disimpan sebagai lease dinamis | Pembuktian dilakukan dari sisi client |
 
-SOAL 11
+### SOAL 11
+
 Diminta: Mengonfigurasi arsitektur DNS Master-Slave menggunakan BIND9 untuk domain jujutsu.k45.com dengan utahime (10.86.1.2) sebagai DNS Master dan shoko (10.86.1.3) sebagai DNS Slave. Memastikan transfer zona otomatis berfungsi ketika nomor serial diperbarui, serta membuktikan bahwa client infrastruktur dapat melakukan query DNS ke kedua server dengan sukses.
 
 Konsep dasar Master-Slave menempatkan utahime sebagai pusat data utama (buku induk) yang menyimpan berkas zona asli, sedangkan shoko bertindak sebagai salinan resmi (slave) yang secara otomatis menyinkronkan data zona dari Master menggunakan nomor serial (SOA) dan mekanisme notify.
@@ -1409,7 +1410,8 @@ Client berhasil melakukan query record SOA dan NS ke kedua server dengan hasil y
 
 Script: scripts/soal11.sh, dijalankan di node utahime dan shoko.
 
-SOAL 12
+### SOAL 12
+
 Diminta: Mengonfigurasi pemetaan domain utama pada utahime dengan membuat record A untuk jujutsu.k45.com yang mengarah ke IP gojo (10.86.1.4) serta record CNAME untuk www. Membuat Reverse DNS (zona PTR) untuk melacak IP Gojo kembali ke domain resminya, serta mengaktifkan fitur DNS Forwarder pada BIND9 mengarah ke IP gateway internet (192.168.122.1). Terakhir, membuktikan fungsionalitasnya melalui dig (untuk CNAME dan PTR) serta ping ke domain internet seperti google.com dari sisi client.   
 
 Langkah-Langkah Pengerjaan & Eksekusi ScriptScript otomatisasi ini dijalankan pada node utahime (10.86.1.2) untuk memperbarui konfigurasi BIND9, menambahkan zona reverse, serta mengaktifkan forwarder.

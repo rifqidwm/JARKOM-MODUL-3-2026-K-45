@@ -1251,3 +1251,153 @@ ip route
 | `ip addr add` menampilkan `Address already assigned` | Alamat sudah terpasang sebelumnya | Diganti dengan `ip addr replace` |
 | Client memperoleh lease time tidak wajar ketika langkah diulang | Lease dari tahap sebelumnya masih tersimpan | Lease dikosongkan pada soal 2, 4, dan 5 |
 | kugisaki tidak muncul di `dhcpd.leases` | Host dengan `fixed-address` tidak disimpan sebagai lease dinamis | Pembuktian dilakukan dari sisi client |
+
+SOAL 11
+Diminta: Mengonfigurasi arsitektur DNS Master-Slave menggunakan BIND9 untuk domain jujutsu.k45.com dengan utahime (10.86.1.2) sebagai DNS Master dan shoko (10.86.1.3) sebagai DNS Slave. Memastikan transfer zona otomatis berfungsi ketika nomor serial diperbarui, serta membuktikan bahwa client infrastruktur dapat melakukan query DNS ke kedua server dengan sukses.
+
+Konsep dasar Master-Slave menempatkan utahime sebagai pusat data utama (buku induk) yang menyimpan berkas zona asli, sedangkan shoko bertindak sebagai salinan resmi (slave) yang secara otomatis menyinkronkan data zona dari Master menggunakan nomor serial (SOA) dan mekanisme notify.
+
+Konfigurasi Utahime (DNS Master)
+Langkah-langkah berikut dikerjakan pada node utahime untuk menyiapkan peran sebagai DNS Master.
+
+Langkah 1, Menyiapkan Resolver dan Memasang BIND9:
+Mengonfigurasi /etc/resolv.conf agar dapat mengakses internet, melakukan pembaruan paket, lalu memasang paket BIND9 beserta utilitas pendukungnya.
+
+Bash
+echo "nameserver 192.168.122.1" > /etc/resolv.conf
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils
+Langkah 2, Mengonfigurasi Opsi dan Zona Master:
+Mengatur /etc/bind/named.conf.options agar server mendengarkan seluruh interface dan mengizinkan query. Selanjutnya, mendefinisikan zona jujutsu.k45.com sebagai master pada /etc/bind/named.conf.local, lengkap dengan direktif allow-transfer dan also-notify yang mengarah ke IP Shoko (10.86.1.3).
+
+```Bash
+cat > /etc/bind/named.conf.options <<'EOT'
+options {
+    directory "/var/cache/bind";
+    listen-on { any; };
+    allow-query { any; };
+    allow-recursion { any; };
+    dnssec-validation no;
+};
+EOT
+
+mkdir -p /etc/bind/zones
+cat > /etc/bind/named.conf.local <<'EOT'
+zone "jujutsu.k45.com" {
+    type master;
+    file "/etc/bind/zones/db.jujutsu.k45.com";
+    allow-transfer { 10.86.1.3; };
+    also-notify { 10.86.1.3; };
+    notify yes;
+};
+EOT
+```
+
+Langkah 3, Membuat Berkas Database Zona:
+Membuat berkas zona db.jujutsu.k45.com yang mendefinisikan record SOA, NS untuk master (ns1) dan slave (ns2), serta pemetaan IP masing-masing.
+```
+Bash
+cat > /etc/bind/zones/db.jujutsu.k45.com <<'EOT'
+$TTL 604800
+@   IN  SOA ns1.jujutsu.k45.com. admin.jujutsu.k45.com. (
+            2026101301 ; Serial
+            604800     ; Refresh
+            86400      ; Retry
+            2419200    ; Expire
+            604800 )   ; Negative Cache TTL
+
+@       IN  NS  ns1.jujutsu.k45.com.
+@       IN  NS  ns2.jujutsu.k45.com.
+ns1     IN  A   10.86.1.2
+ns2     IN  A   10.86.1.3
+EOT
+```
+Langkah 4, Memvalidasi Konfigurasi dan Menjalankan Service:
+Memeriksa kesalahan sintaks pada konfigurasi dan zona, lalu memulai ulang service BIND9.
+```
+Bash
+named-checkconf
+named-checkzone jujutsu.k45.com /etc/bind/zones/db.jujutsu.k45.com
+service named restart || service bind9 restart
+```
+
+Konfigurasi Shoko (DNS Slave)
+Langkah-langkah berikut dikerjakan pada node shoko untuk menyiapkan peran sebagai DNS Slave.
+
+Langkah 5, Mengonfigurasi Node Shoko sebagai Slave:
+Memasang BIND9 di Shoko, lalu mengatur /etc/bind/named.conf.local dengan tipe slave serta menunjuk master ke IP 10.86.1.2. Direktif file diarahkan ke direktori /var/lib/bind/ agar slave memiliki hak tulis untuk menyimpan salinan zona.
+```
+Bash
+echo "nameserver 192.168.122.1" > /etc/resolv.conf
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils
+
+cat > /etc/bind/named.conf.options <<'EOT'
+options {
+    directory "/var/cache/bind";
+    listen-on { any; };
+    allow-query { any; };
+    allow-recursion { any; };
+    dnssec-validation no;
+};
+EOT
+
+cat > /etc/bind/named.conf.local <<'EOT'
+zone "jujutsu.k45.com" {
+    type slave;
+    masters { 10.86.1.2; };
+    file "/var/lib/bind/db.jujutsu.k45.com";
+};
+EOT
+
+mkdir -p /var/lib/bind && chown -R bind:bind /var/lib/bind
+named-checkconf
+service named restart || service bind9 restart
+```
+
+Verifikasi dan Pengujian
+
+Langkah 6, Memeriksa Sinkronisasi Awal di Shoko:
+Memeriksa apakah berkas zona berhasil tersalin secara otomatis oleh slave serta mengecek nomor serial SOA awal.
+```
+Bash
+ls -l /var/lib/bind/
+dig @10.86.1.3 jujutsu.k45.com SOA +short
+```
+<img width="585" height="76" alt="Screenshot 2026-10-13 at 21 49 25" src="https://github.com/user-attachments/assets/b74ca513-4733-4c39-8c9f-cdac5c465832" />
+
+Langkah 7, Menguji Replikasi Otomatis (Perubahan Serial):
+Mengubah nomor serial pada berkas zona di utahime, lalu melakukan reload dengan rndc. Setelah itu, memeriksa apakah shoko otomatis memperbarui nomor serialnya.
+```
+Bash
+# Dijalankan di utahime:
+sed -i 's/2026101301/2026101302/' /etc/bind/zones/db.jujutsu.k45.com
+rndc reload
+
+# Dijalankan di shoko (beberapa detik kemudian):
+dig @10.86.1.3 jujutsu.k45.com SOA +short
+```
+<img width="589" height="31" alt="Screenshot 2026-10-13 at 21 51 00" src="https://github.com/user-attachments/assets/266086d2-ffa4-4bae-a9fe-ca08f4092b09" />
+
+Langkah 8, Menguji Query dari Client (Itadori):
+Melakukan pengujian query record SOA dan NS dari node client itadori ke kedua server DNS (Master dan Slave).
+```
+Bash
+dig @10.86.1.2 jujutsu.k45.com SOA
+dig @10.86.1.3 jujutsu.k45.com SOA
+dig @10.86.1.2 jujutsu.k45.com NS +short
+dig @10.86.1.3 jujutsu.k45.com NS +short
+```
+<img width="525" height="104" alt="Screenshot 2026-10-13 at 21 53 03" src="https://github.com/user-attachments/assets/27242dad-5194-4668-9817-2ef3560e2f42" />
+<img width="503" height="93" alt="Screenshot 2026-10-13 at 21 53 28" src="https://github.com/user-attachments/assets/3845d965-1baa-4043-a1e1-e2ed1a1e20c9" />
+
+Hasil:
+utahime berhasil bertindak sebagai DNS Master dan shoko berhasil bertindak sebagai DNS Slave untuk domain jujutsu.k45.com.
+
+Berkas zona berhasil ditransfer secara otomatis dari Master ke Slave saat service berjalan.
+
+Perubahan nomor serial pada Master berhasil direplikasi secara instan ke Slave tanpa intervensi manual di sisi Slave.
+
+Client berhasil melakukan query record SOA dan NS ke kedua server dengan hasil yang valid dan konsisten.
+
+Script: scripts/soal11.sh, dijalankan di node utahime dan shoko.

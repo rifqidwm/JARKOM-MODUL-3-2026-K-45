@@ -1630,3 +1630,157 @@ Slave (inumaki) berhasil terhubung ke master menggunakan GTID slave_pos.
 Parameter Slave_IO_Running dan Slave_SQL_Running bernilai Yes, serta Seconds_Behind_Master bernilai 0 yang menandakan sinkronisasi data berjalan secara real-time tanpa kendala.
 
 Script: scripts/soal13_master.sh, dijalankan di node yaga (10.86.4.8) dan scripts/soal13_slave.sh, dijalankan di node inumaki (10.86.4.9).
+
+### SOAL 14
+Diminta: Mengonfigurasi worker frontend (maki dan panda) menggunakan Nginx dan PHP-FPM untuk menyajikan halaman web yang menampilkan hostname masing-masing. Pada worker backend (nanami, todo, dan kirara), siapkan layanan API yang mencatat log request ke database yaga (10.86.4.8). Konfigurasikan virtual host agar worker merespons domain layanan, serta pastikan pembatasan akses langsung dari klien berjalan dengan benar.   
+
+Langkah-Langkah Pengerjaan & Eksekusi ScriptScript otomatisasi ini dibagi menjadi dua berkas terpisah karena dijalankan pada node frontend dan backend yang berbeda di Data Center.
+
+Langkah 1, Membuat dan Menjalankan Script Otomatisasi di Frontend Worker (maki dan panda):Buat file script /root/soal14_frontend.sh di node maki dan panda:
+
+Bash
+```
+cat > /root/soal14_frontend.sh << 'EOF'
+#!/bin/sh
+
+# 1. Instalasi Nginx dan PHP-FPM
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php-fpm
+
+# 2. Buat halaman web frontend yang menampilkan hostname masing-masing
+cat > /var/www/html/index.php << 'EOT'
+<?php
+echo "Frontend Worker Hostname: " . gethostname();
+?>
+EOT
+
+rm -f /var/www/html/index.html
+
+# 3. Konfigurasi Nginx Virtual Host (PHP 8.4 socket)
+cat > /etc/nginx/sites-available/default << 'EOT'
+server {
+    listen 80;
+    server_name _;
+
+    root /var/www/html;
+    index index.php index.html index.htm;
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+}
+EOT
+
+# 4. Bersihkan proses lama dan jalankan daemon manual (Non-systemd container)
+pkill -9 nginx || true
+pkill -9 php-fpm || true
+/usr/sbin/php-fpm8.4 -D
+nginx
+EOF
+
+sh /root/soal14_frontend.sh
+```
+
+Langkah 2, Membuat dan Menjalankan Script Otomatisasi di API Worker (nanami, todo, dan kirara):
+Buat file script /root/soal14_api.sh di node nanami, todo, dan kirara:
+
+Bash
+```
+cat > /root/soal14_api.sh << 'EOF'
+#!/bin/sh
+
+# 1. Instalasi Nginx, PHP, dan MariaDB Client
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx php-fpm php-mysql mariadb-client
+
+# 2. Buat endpoint API yang mencatat log request ke database yaga (10.86.4.8)
+mkdir -p /var/www/html/api
+cat > /var/www/html/api/index.php << 'EOT'
+<?php
+header('Content-Type: application/json');
+$host = '10.86.4.8';
+$user = 'replicator';
+$pass = 'k45pass';
+$db   = 'db_shibuya_K01'; // Sesuaikan nama kelompok
+
+try {
+    $conn = new mysqli($host, $user, $pass, $db);
+    if (!$conn->connect_error) {
+        $client_ip = $_SERVER['HTTP_X_REAL_IP'] ?? $_SERVER['REMOTE_ADDR'];
+        $worker_host = gethostname();
+        $sql = "INSERT INTO request_logs (client_ip, worker_node) VALUES ('$client_ip', '$worker_host')";
+        @$conn->query($sql);
+    }
+} catch (Exception $e) {
+    // Lanjutkan eksekusi agar JSON tetap terkirim
+}
+
+echo json_encode([
+    "status" => "success",
+    "worker" => gethostname(),
+    "message" => "API request processed"
+]);
+?>
+EOT
+
+# 3. Konfigurasi Nginx Virtual Host API (PHP 8.4 socket)
+cat > /etc/nginx/sites-available/default << 'EOT'
+server {
+    listen 80;
+    server_name _;
+
+    root /var/www/html;
+    index index.php index.html;
+
+    location / {
+        try_files $uri $uri/ /api/index.php?$query_string;
+    }
+
+    location ~ \.php$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:/run/php/php8.4-fpm.sock;
+    }
+}
+EOT
+
+# 4. Bersihkan proses lama dan jalankan daemon manual
+pkill -9 nginx || true
+pkill -9 php-fpm || true
+/usr/sbin/php-fpm8.4 -D
+nginx
+EOF
+
+sh /root/soal14_api.sh
+```
+
+Verifikasi dan Pengujian 
+
+Langkah 3, Menguji Akses Web dan API Worker:
+Bash
+```
+curl http://localhost
+curl http://localhost/api/
+```
+
+Bukti Pengujian & Screenshot yang Diperlukan:
+
+Uji Frontend Worker (maki / panda):
+
+Jalankan: curl http://localhostPastikan output menampilkan: Frontend Worker Hostname: maki (atau panda).
+<img width="304" height="33" alt="Screenshot 2026-10-14 at 00 26 21" src="https://github.com/user-attachments/assets/85a68426-d7ce-4a4c-bcf4-206273218e2c" />
+
+Uji API Worker (nanami / todo / kirara):
+
+Jalankan: curl http://localhost/api/ Pastikan output menampilkan respon JSON yang sukses.
+<img width="366" height="21" alt="Screenshot 2026-10-14 at 00 28 37" src="https://github.com/user-attachments/assets/6aaebd38-6f49-4206-be19-22b29fe40513" />
+
+Log Database di yaga:
+Jalankan di yaga: mysql -u root -e "SELECT * FROM db_shibuya_K01.request_logs;
+"Pastikan catatan request dari masing-masing worker masuk secara real-time.
+
+Script: scripts/soal14_db.sh, dijalankan di node yaga (10.86.4.8), scripts/soal14_frontend.sh, dijalankan di node maki dan panda, dan scripts/soal14_api.sh, dijalankan di node nanami, todo, dan kirara.

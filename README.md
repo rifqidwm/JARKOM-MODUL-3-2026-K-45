@@ -98,28 +98,12 @@ Skenario **Curtain Protocol: Shibuya Incident**. Node infrastruktur memakai imag
 | miwa                   | 3       | 10.86.3.100 - 10.86.3.199 | **43200** (12 jam) |
 | kugisaki (VIP)         | 3       | **10.86.3.99** (fixed)  | 600 (default)       |
 
----
-
-## Struktur Repository
-
-```text
-Jarkom-Modul-3-2026-K45/
-├── README.md              (laporan ini)
-├── assets/                (screenshot)
-└── scripts/
-    ├── README.md          (cara pakai script, node tujuan, urutan, blok paste)
-    ├── soal01.sh ... soal10.sh
-```
-
-Setiap soal punya **command step by step** (di laporan ini) dan **script penyelesaian** (`scripts/soalNN.sh`) dengan isi yang sama. Script dikenali per node dari hostname, jadi satu file dipakai di semua node tujuan soal itu. Petunjuk lengkap ada di `scripts/README.md`.
 
 ---
 
 ## Urutan Pengerjaan
 
-Seluruh konfigurasi dijalankan lewat **console tiap node** dan berurutan, karena tiap tahap bergantung pada tahap sebelumnya:
-
-1. **Start NAT1 dan semua switch.** Switch yang abu-abu (belum Start) tidak meneruskan frame, gejalanya `Destination Host Unreachable` ke gateway.
+1. **Start NAT1 dan semua switch.** 
 2. **jichi** dikonfigurasi lebih dulu (WAN, gateway Network 1-4, forwarding, NAT), karena node lain butuh jalur keluar untuk mengunduh paket.
 3. **Host infrastruktur** diberi IP statis, gateway, dan resolver awal.
 4. **tengen** memasang `isc-dhcp-server`, **jichi** memasang `isc-dhcp-relay`, lalu **client** meminta lease.
@@ -129,7 +113,6 @@ Seluruh konfigurasi dijalankan lewat **console tiap node** dan berurutan, karena
 Verifikasi tiap tahap dilakukan sebelum lanjut ke tahap berikutnya.
 
 ---
-
 
 ### Soal 1 - Konektivitas dasar: gateway, forwarding, source NAT
 
@@ -173,6 +156,7 @@ Langkah 5, source NAT (masquerade) untuk seluruh subnet kelompok:
 
 ```sh
 command -v iptables >/dev/null || (apt-get update && apt-get install -y iptables)
+iptables -t nat -C POSTROUTING -s 10.86.0.0/16 -o eth0 -j MASQUERADE 2>/dev/null || \
 iptables -t nat -A POSTROUTING -s 10.86.0.0/16 -o eth0 -j MASQUERADE
 ```
 
@@ -932,7 +916,7 @@ ip route
 ```sh
 update-rc.d isc-dhcp-server defaults
 update-rc.d isc-dhcp-server enable
-echo 'service isc-dhcp-server start >/dev/null 2>&1' >> /root/.bashrc
+grep -q "isc-dhcp-server start" /root/.bashrc || echo 'service isc-dhcp-server start >/dev/null 2>&1' >> /root/.bashrc
 ```
 
 **Di jichi:**
@@ -940,7 +924,7 @@ echo 'service isc-dhcp-server start >/dev/null 2>&1' >> /root/.bashrc
 ```sh
 update-rc.d isc-dhcp-relay defaults
 update-rc.d isc-dhcp-relay enable
-echo 'service isc-dhcp-relay start >/dev/null 2>&1' >> /root/.bashrc
+grep -q "isc-dhcp-relay start" /root/.bashrc || echo 'service isc-dhcp-relay start >/dev/null 2>&1' >> /root/.bashrc
 ```
 
 **Restart:** di GNS3 Stop lalu Start **jichi dan tengen**. Setelah menyala, **buka console masing-masing** (urutan jichi, lalu tengen, lalu client) supaya `/root/.bashrc` berjalan.

@@ -18,27 +18,8 @@
 | 10     | Ethernet switch  | Switch1 sampai Switch10                                                                     |
 | 1      | NAT              | NAT1                                                                                        |
 
-Router **jichi** diberi minimal 5 network adapter (eth0 sampai eth4) melalui menu Configure saat node dalam keadaan mati.
 
-**Daftar link:**
-
-| Dari (node/eth) | Ke                                      |
-| --------------- | --------------------------------------- |
-| jichi eth0      | NAT1                                    |
-| jichi eth1      | Switch1                                 |
-| jichi eth2      | Switch2                                 |
-| jichi eth3      | Switch4                                 |
-| jichi eth4      | Switch6                                 |
-| Switch1         | utahime, shoko, gojo                    |
-| Switch2         | Switch3, Switch9                        |
-| Switch3         | itadori, fushiguro                      |
-| Switch9         | zenin, okkotsu                          |
-| Switch4         | Switch5, Switch8                        |
-| Switch5         | ino, kusakabe                           |
-| Switch8         | kugisaki, miwa                          |
-| Switch6         | Switch7, Switch10                       |
-| Switch7         | geto, maki, panda, nanami, todo, kirara |
-| Switch10        | tengen, yaga, inumaki                   |
+**TOPOLOGI JARINGAN:**
 
 
 

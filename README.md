@@ -1784,3 +1784,80 @@ Jalankan di yaga: mysql -u root -e "SELECT * FROM db_shibuya_K01.request_logs;
 "Pastikan catatan request dari masing-masing worker masuk secara real-time.
 
 Script: scripts/soal14_db.sh, dijalankan di node yaga (10.86.4.8), scripts/soal14_frontend.sh, dijalankan di node maki dan panda, dan scripts/soal14_api.sh, dijalankan di node nanami, todo, dan kirara.
+
+### SOAL 15
+
+Diminta: Mengonfigurasi Load Balancer pada node geto menggunakan Nginx dengan metode Weighted Round Robin (rasio 3:1 untuk nanami dan todo) untuk mendistribusikan trafik secara proporsional ke layanan API backend.
+
+Langkah-Langkah Pengerjaan & Eksekusi Script
+Script otomatisasi ini dijalankan pada node Load Balancer (geto) di Data Center.
+
+Langkah 1, Membuat dan Menjalankan Script Otomatisasi di Load Balancer Worker (geto):
+Buat file script /root/soal15_geto.sh di node geto:
+
+Bash
+```
+cat > /root/soal15_geto.sh << 'EOF'
+#!/bin/sh
+
+#1. Instalasi Nginx
+
+apt-get update
+DEBIAN_FRONTEND=noninteractive apt-get install -y nginx
+
+#2. Konfigurasi Nginx Load Balancer dengan Weighted Round Robin (3:1)
+
+cat > /etc/nginx/sites-available/default << 'EOT'
+upstream api_cluster {
+server 10.86.4.5 weight=3; # nanami
+server 10.86.4.6 weight=1; # todo
+}
+
+server {
+listen 80;
+server_name _;
+
+location / {
+    proxy_pass http://api_cluster;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+
+
+}
+EOT
+
+#3. Bersihkan proses lama dan jalankan daemon Nginx
+
+pkill -9 nginx || true
+nginx
+EOF
+
+sh /root/soal15_geto.sh
+```
+
+Verifikasi dan Pengujian Langkah 2, Menguji Pembagian Beban (Load Balancing):
+Bash
+
+for i in {1..8}; do curl -s http://localhost/api/; echo; done
+
+Bukti Pengujian & Screenshot yang Diperlukan:
+
+Screenshot Uji Load Balancer di geto:
+
+Jalankan: for i in {1..8}; do curl -s http://localhost/api/; echo; done
+
+Pastikan output menampilkan respon dari nanami dan todo secara proporsional (rasio 3:1).
+
+<img width="385" height="88" alt="Screenshot 2026-10-14 at 00 53 48" src="https://github.com/user-attachments/assets/cb93c979-cca7-4a00-9b8f-b11127b06d15" />
+
+Screenshot Verifikasi Log Request di Database yaga:
+
+Jalankan di yaga: mysql -u root -e "SELECT * FROM db_shibuya_K01.request_logs;"
+
+Pastikan catatan request dari masing-masing worker tercatat dengan benar.
+
+<img width="450" height="156" alt="Screenshot 2026-10-14 at 00 54 34" src="https://github.com/user-attachments/assets/1d65f589-063e-4136-baad-1f2ffadd9b3b" />
+
+soal15_geto.sh dijalankan di node geto.

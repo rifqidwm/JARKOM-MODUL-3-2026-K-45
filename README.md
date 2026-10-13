@@ -1270,7 +1270,8 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils
 Langkah 2, Mengonfigurasi Opsi dan Zona Master:
 Mengatur /etc/bind/named.conf.options agar server mendengarkan seluruh interface dan mengizinkan query. Selanjutnya, mendefinisikan zona jujutsu.k45.com sebagai master pada /etc/bind/named.conf.local, lengkap dengan direktif allow-transfer dan also-notify yang mengarah ke IP Shoko (10.86.1.3).
 
-```Bash
+Bash
+```
 cat > /etc/bind/named.conf.options <<'EOT'
 options {
     directory "/var/cache/bind";
@@ -1295,8 +1296,9 @@ EOT
 
 Langkah 3, Membuat Berkas Database Zona:
 Membuat berkas zona db.jujutsu.k45.com yang mendefinisikan record SOA, NS untuk master (ns1) dan slave (ns2), serta pemetaan IP masing-masing.
-```
+
 Bash
+```
 cat > /etc/bind/zones/db.jujutsu.k45.com <<'EOT'
 $TTL 604800
 @   IN  SOA ns1.jujutsu.k45.com. admin.jujutsu.k45.com. (
@@ -1314,8 +1316,9 @@ EOT
 ```
 Langkah 4, Memvalidasi Konfigurasi dan Menjalankan Service:
 Memeriksa kesalahan sintaks pada konfigurasi dan zona, lalu memulai ulang service BIND9.
-```
+
 Bash
+```
 named-checkconf
 named-checkzone jujutsu.k45.com /etc/bind/zones/db.jujutsu.k45.com
 service named restart || service bind9 restart
@@ -1326,8 +1329,9 @@ Langkah-langkah berikut dikerjakan pada node shoko untuk menyiapkan peran sebaga
 
 Langkah 5, Mengonfigurasi Node Shoko sebagai Slave:
 Memasang BIND9 di Shoko, lalu mengatur /etc/bind/named.conf.local dengan tipe slave serta menunjuk master ke IP 10.86.1.2. Direktif file diarahkan ke direktori /var/lib/bind/ agar slave memiliki hak tulis untuk menyimpan salinan zona.
-```
+
 Bash
+```
 echo "nameserver 192.168.122.1" > /etc/resolv.conf
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y bind9 bind9utils dnsutils
@@ -1359,8 +1363,9 @@ Verifikasi dan Pengujian
 
 Langkah 6, Memeriksa Sinkronisasi Awal di Shoko:
 Memeriksa apakah berkas zona berhasil tersalin secara otomatis oleh slave serta mengecek nomor serial SOA awal.
-```
+
 Bash
+```
 ls -l /var/lib/bind/
 dig @10.86.1.3 jujutsu.k45.com SOA +short
 ```
@@ -1368,8 +1373,9 @@ dig @10.86.1.3 jujutsu.k45.com SOA +short
 
 Langkah 7, Menguji Replikasi Otomatis (Perubahan Serial):
 Mengubah nomor serial pada berkas zona di utahime, lalu melakukan reload dengan rndc. Setelah itu, memeriksa apakah shoko otomatis memperbarui nomor serialnya.
-```
+
 Bash
+```
 # Dijalankan di utahime:
 sed -i 's/2026101301/2026101302/' /etc/bind/zones/db.jujutsu.k45.com
 rndc reload
@@ -1381,8 +1387,9 @@ dig @10.86.1.3 jujutsu.k45.com SOA +short
 
 Langkah 8, Menguji Query dari Client (Itadori):
 Melakukan pengujian query record SOA dan NS dari node client itadori ke kedua server DNS (Master dan Slave).
-```
+
 Bash
+```
 dig @10.86.1.2 jujutsu.k45.com SOA
 dig @10.86.1.3 jujutsu.k45.com SOA
 dig @10.86.1.2 jujutsu.k45.com NS +short
@@ -1401,3 +1408,117 @@ Perubahan nomor serial pada Master berhasil direplikasi secara instan ke Slave t
 Client berhasil melakukan query record SOA dan NS ke kedua server dengan hasil yang valid dan konsisten.
 
 Script: scripts/soal11.sh, dijalankan di node utahime dan shoko.
+
+SOAL 12
+Diminta: Mengonfigurasi pemetaan domain utama pada utahime dengan membuat record A untuk jujutsu.k45.com yang mengarah ke IP gojo (10.86.1.4) serta record CNAME untuk www. Membuat Reverse DNS (zona PTR) untuk melacak IP Gojo kembali ke domain resminya, serta mengaktifkan fitur DNS Forwarder pada BIND9 mengarah ke IP gateway internet (192.168.122.1). Terakhir, membuktikan fungsionalitasnya melalui dig (untuk CNAME dan PTR) serta ping ke domain internet seperti google.com dari sisi client.   
+
+Langkah-Langkah Pengerjaan & Eksekusi ScriptScript otomatisasi ini dijalankan pada node utahime (10.86.1.2) untuk memperbarui konfigurasi BIND9, menambahkan zona reverse, serta mengaktifkan forwarder.
+
+Langkah 1, Membuat dan Menjalankan Script Otomatisasi di Utahime
+
+:Buat file script /root/soal12.sh di node utahime:
+
+Bash
+```
+cat > /root/soal12.sh << 'EOF'
+#!/bin/sh
+
+# 1. Update named.conf.options dengan menambahkan forwarders ke 192.168.122.1
+cat > /etc/bind/named.conf.options <<'EOT'
+options {
+    directory "/var/cache/bind";
+    listen-on { any; };
+    allow-query { any; };
+    allow-recursion { any; };
+    forwarders { 192.168.122.1; };
+    dnssec-validation no;
+};
+EOT
+
+# 2. Tambahkan zona reverse (PTR) ke named.conf.local jika belum ada
+if ! grep -q "1.86.10.in-addr.arpa" /etc/bind/named.conf.local; then
+    cat >> /etc/bind/named.conf.local <<'EOT'
+
+zone "1.86.10.in-addr.arpa" {
+    type master;
+    file "/etc/bind/zones/db.10.86.1";
+};
+EOT
+fi
+
+# 3. Perbarui berkas zona utama dengan A record ke Gojo (10.86.1.4) dan CNAME www
+cat > /etc/bind/zones/db.jujutsu.k45.com <<'EOT'
+$TTL 604800
+@   IN  SOA ns1.jujutsu.k45.com. admin.jujutsu.k45.com. (
+            2026101303 ; Serial
+            604800     ; Refresh
+            86400      ; Retry
+            2419200    ; Expire
+            604800 )   ; Negative Cache TTL
+
+@       IN  NS  ns1.jujutsu.k45.com.
+@       IN  NS  ns2.jujutsu.k45.com.
+ns1     IN  A   10.86.1.2
+ns2     IN  A   10.86.1.3
+
+@       IN  A   10.86.1.4
+www     IN  CNAME jujutsu.k45.com.
+EOT
+
+# 4. Buat berkas database Reverse DNS (PTR) untuk IP Gojo (.4)
+cat > /etc/bind/zones/db.10.86.1 <<'EOT'
+$TTL 604800
+@   IN  SOA ns1.jujutsu.k45.com. admin.jujutsu.k45.com. (
+            2026101301 ; Serial
+            604800     ; Refresh
+            86400      ; Retry
+            2419200    ; Expire
+            604800 )   ; Negative Cache TTL
+
+@       IN  NS  ns1.jujutsu.k45.com.
+4       IN  PTR jujutsu.k45.com.
+EOT
+
+# 5. Validasi konfigurasi dan restart service bind9
+named-checkconf
+named-checkzone jujutsu.k45.com /etc/bind/zones/db.jujutsu.k45.com
+named-checkzone 1.86.10.in-addr.arpa /etc/bind/zones/db.10.86.1
+service named restart || service bind9 restart
+EOF
+
+sh /root/soal12.sh
+```
+
+Verifikasi dan Pengujian
+Langkah 2, Menguji Resolusi Domain dan CNAME dari Client (Itadori):
+
+Bash
+```
+dig jujutsu.k45.com +short
+dig www.jujutsu.k45.com +short
+```
+<img width="274" height="77" alt="Screenshot 2026-10-13 at 22 29 51" src="https://github.com/user-attachments/assets/cb6aba1f-536c-4064-996a-97699c007f3f" />
+
+Langkah 3, Menguji Reverse DNS (PTR Lookup):
+
+Bash
+```
+dig -x 10.86.1.4 +short
+```
+<img width="262" height="34" alt="Screenshot 2026-10-13 at 22 30 24" src="https://github.com/user-attachments/assets/c3f82f88-90aa-4d56-a876-93d7db2dc3ce" />
+  
+Langkah 4, Menguji DNS Forwarder dan Akses Internet:
+Bash
+```
+dig google.com +short
+ping -c 2 google.com
+```
+<img width="609" height="225" alt="Screenshot 2026-10-13 at 22 30 59" src="https://github.com/user-attachments/assets/eb58361f-062b-4eb7-85c4-160ad90a6c89" />  
+
+Hasil: 
+- Domain jujutsu.k45.com berhasil dipetakan ke IP gojo (10.86.1.4) dan www berhasil menjadi alias (CNAME).
+- Zona Reverse (PTR) berhasil mengonversi IP 10.86.1.4 kembali ke nama domain resminya.
+- Fitur DNS Forwarder aktif dan berhasil meneruskan query domain eksternal ke 192.168.122.1, memungkinkan client mengakses internet dengan lancar.
+
+  
+Script: scripts/soal12.sh, dijalankan di node utahime (10.86.1.2).

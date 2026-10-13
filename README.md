@@ -130,8 +130,6 @@ Verifikasi tiap tahap dilakukan sebelum lanjut ke tahap berikutnya.
 
 ---
 
-## Laporan
-
 
 ### Soal 1 - Konektivitas dasar: gateway, forwarding, source NAT
 

@@ -2242,3 +2242,443 @@ Periksa entri terbaru setelah pengujian dari Itadori dan Ino. IP pada kolom `cli
 - `scripts/soal17_todo.sh`, dijalankan di node Todo (`10.86.4.6`).
 
 Script pemeriksaan Nanami dan Todo hanya membantu memeriksa kode yang ada; keduanya tidak otomatis mengubah aplikasi. Pengujian dari Itadori dan Ino serta query database pada Yaga dijalankan secara manual untuk membuktikan hasil konfigurasi.
+
+### SOAL 18
+
+#### Diminta
+Mengonfigurasi load balancer Nginx pada Geto dengan Nanami dan Todo sebagai worker utama serta Kirara sebagai backup server. Menambahkan mekanisme passive health check dan menguji failover agar request API tetap berhasil ketika worker utama mengalami kegagalan.
+
+#### Langkah-Langkah Pengerjaan & Pengujian
+
+**1. Konfigurasi API Worker Nanami**
+
+**Node:** Nanami (`10.86.4.5`)
+
+Memastikan endpoint API tersedia dan dapat memberikan respons JSON. Endpoint `/api/` digunakan untuk memverifikasi worker yang memproses request.
+
+Script: `/root/soal18_nanami.sh`
+
+```
+#!/bin/bash
+set -e
+
+mkdir -p /var/www/html/api
+
+cat > /var/www/html/api/index.php <<'PHP'
+<?php
+header('Content-Type: application/json');
+
+$host = '10.86.4.8';
+$user = 'replicator';
+$pass = 'k45pass';
+$db   = 'db_shibuya_K45';
+
+$worker = gethostname();
+$remote = $_SERVER['REMOTE_ADDR'] ?? '';
+$realIP = $_SERVER['HTTP_X_REAL_IP'] ?? '';
+
+if ($remote === '10.86.4.2' &&
+    filter_var($realIP, FILTER_VALIDATE_IP)) {
+    $clientIP = $realIP;
+} else {
+    $clientIP = $remote;
+}
+
+try {
+    $conn = new mysqli($host, $user, $pass, $db);
+
+    if (!$conn->connect_error) {
+        $stmt = $conn->prepare(
+            'INSERT INTO request_logs (client_ip, worker_node)
+             VALUES (?, ?)'
+        );
+
+        if ($stmt) {
+            $stmt->bind_param('ss', $clientIP, $worker);
+            $stmt->execute();
+            $stmt->close();
+        }
+
+        $conn->close();
+    }
+} catch (Throwable $e) {
+    error_log('Soal 18 Nanami: ' . $e->getMessage());
+}
+
+echo json_encode([
+    'status' => 'success',
+    'worker' => $worker,
+    'client_ip' => $clientIP,
+    'message' => 'API request processed'
+]);
+?>
+PHP
+
+php -l /var/www/html/api/index.php
+nginx -t
+```
+
+Jalankan pada node Nanami:
+
+```
+chmod +x /root/soal18_nanami.sh
+/root/soal18_nanami.sh
+```
+
+**2. Konfigurasi API Worker Todo**
+
+**Node:** Todo (`10.86.4.6`)
+
+Memastikan Todo menyediakan endpoint API yang dapat menerima request dari load balancer Geto dan mengembalikan respons JSON.
+
+Script: `/root/soal18_todo.sh`
+
+```
+#!/bin/bash
+set -e
+
+mkdir -p /var/www/html/api
+
+cat > /var/www/html/api/index.php <<'PHP'
+<?php
+header('Content-Type: application/json');
+
+$host = '10.86.4.8';
+$user = 'replicator';
+$pass = 'k45pass';
+$db   = 'db_shibuya_K45';
+
+$worker = gethostname();
+$remote = $_SERVER['REMOTE_ADDR'] ?? '';
+$realIP = $_SERVER['HTTP_X_REAL_IP'] ?? '';
+
+if ($remote === '10.86.4.2' &&
+    filter_var($realIP, FILTER_VALIDATE_IP)) {
+    $clientIP = $realIP;
+} else {
+    $clientIP = $remote;
+}
+
+try {
+    $conn = new mysqli($host, $user, $pass, $db);
+
+    if (!$conn->connect_error) {
+        $stmt = $conn->prepare(
+            'INSERT INTO request_logs (client_ip, worker_node)
+             VALUES (?, ?)'
+        );
+
+        if ($stmt) {
+            $stmt->bind_param('ss', $clientIP, $worker);
+            $stmt->execute();
+            $stmt->close();
+        }
+
+        $conn->close();
+    }
+} catch (Throwable $e) {
+    error_log('Soal 18 Todo: ' . $e->getMessage());
+}
+
+echo json_encode([
+    'status' => 'success',
+    'worker' => $worker,
+    'client_ip' => $clientIP,
+    'message' => 'API request processed'
+]);
+?>
+PHP
+
+php -l /var/www/html/api/index.php
+nginx -t
+```
+
+Jalankan pada node Todo:
+
+```
+chmod +x /root/soal18_todo.sh
+/root/soal18_todo.sh
+```
+
+**3. Konfigurasi Backup API Worker Kirara**
+
+**Node:** Kirara (`10.86.4.7`)
+
+Memasang Nginx, PHP-FPM, dan PHP MySQL agar Kirara dapat menjalankan endpoint `/api/`. Mengonfigurasi document root dan PHP-FPM, kemudian memvalidasi konfigurasi menggunakan `nginx -t`.
+
+Script: /root/soal18_kirara.sh
+
+```
+#!/bin/bash
+set -e
+
+apt-get update
+apt-get install -y nginx php-fpm php-mysql curl
+
+PHP_VERSION="$(php -r 'echo PHP_MAJOR_VERSION.".".PHP_MINOR_VERSION;')"
+PHP_SOCKET="/run/php/php${PHP_VERSION}-fpm.sock"
+
+mkdir -p /var/www/html/api
+
+cat > /var/www/html/api/index.php <<'PHP'
+<?php
+header('Content-Type: application/json');
+
+$host = '10.86.4.8';
+$user = 'replicator';
+$pass = 'k45pass';
+$db   = 'db_shibuya_K45';
+
+$worker = gethostname();
+$remote = $_SERVER['REMOTE_ADDR'] ?? '';
+$realIP = $_SERVER['HTTP_X_REAL_IP'] ?? '';
+
+if ($remote === '10.86.4.2' &&
+    filter_var($realIP, FILTER_VALIDATE_IP)) {
+    $clientIP = $realIP;
+} else {
+    $clientIP = $remote;
+}
+
+try {
+    $conn = new mysqli($host, $user, $pass, $db);
+
+    if (!$conn->connect_error) {
+        $stmt = $conn->prepare(
+            'INSERT INTO request_logs (client_ip, worker_node)
+             VALUES (?, ?)'
+        );
+
+        if ($stmt) {
+            $stmt->bind_param('ss', $clientIP, $worker);
+            $stmt->execute();
+            $stmt->close();
+        }
+
+        $conn->close();
+    }
+} catch (Throwable $e) {
+    error_log('Soal 18 Kirara: ' . $e->getMessage());
+}
+
+echo json_encode([
+    'status' => 'success',
+    'worker' => $worker,
+    'client_ip' => $clientIP,
+    'message' => 'API request processed'
+]);
+?>
+PHP
+
+cat > /etc/nginx/sites-available/default <<NGINX
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+    root /var/www/html;
+    index index.php index.html;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location /api/ {
+        index index.php;
+        try_files \$uri \$uri/ /api/index.php?\$query_string;
+    }
+
+    location ~ \\.php\$ {
+        include snippets/fastcgi-php.conf;
+        fastcgi_pass unix:\${PHP_SOCKET};
+    }
+
+    location ~ /\\.ht {
+        deny all;
+    }
+}
+NGINX
+
+php -l /var/www/html/api/index.php
+php-fpm${PHP_VERSION} -D
+nginx -t
+nginx
+curl -i http://127.0.0.1/api/
+```
+
+Jalankan pada node Kirara:
+
+```
+chmod +x /root/soal18_kirara.sh
+/root/soal18_kirara.sh
+```
+
+Pengujian endpoint lokal:
+
+```bash
+curl -i http://127.0.0.1/api/
+```
+
+Respons yang diharapkan berupa `HTTP 200 OK` dengan `"worker":"kirara"`.
+
+Script: `/root/soal18_kirara.sh`
+
+**4. Konfigurasi Load Balancer Geto**
+
+**Node:** Geto (`10.86.4.2`)
+
+Menyimpan konfigurasi lama sebelum mengubah konfigurasi Nginx:
+
+```bash
+cp -n /etc/nginx/sites-available/default \
+/etc/nginx/sites-available/default.bak.soal18
+```
+
+Mengonfigurasi upstream API dengan dua worker utama dan satu backup:
+
+```nginx
+upstream api_cluster {
+    server 10.86.4.5:80 weight=3 max_fails=2 fail_timeout=5s;
+    server 10.86.4.6:80 weight=1 max_fails=2 fail_timeout=5s;
+    server 10.86.4.7:80 backup;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $http_x_real_ip;
+        proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 5s;
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 3;
+    }
+}
+```
+
+Memvalidasi dan menjalankan Nginx:
+
+```bash
+nginx -t
+nginx
+```
+
+Script: `/root/soal18_geto.sh`
+
+```
+#!/bin/bash
+set -e
+
+CONFIG="/etc/nginx/sites-available/default"
+
+if [ ! -f "${CONFIG}.bak.soal18" ]; then
+    cp "$CONFIG" "${CONFIG}.bak.soal18"
+fi
+
+cat > "$CONFIG" <<'NGINX'
+upstream api_cluster {
+    server 10.86.4.5:80 weight=3 max_fails=2 fail_timeout=5s;
+    server 10.86.4.6:80 weight=1 max_fails=2 fail_timeout=5s;
+    server 10.86.4.7:80 backup;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $http_x_real_ip;
+        proxy_set_header X-Forwarded-For $http_x_forwarded_for;
+
+        proxy_connect_timeout 2s;
+        proxy_read_timeout 5s;
+        proxy_next_upstream error timeout http_502 http_503 http_504;
+        proxy_next_upstream_tries 3;
+    }
+}
+NGINX
+
+nginx -t
+
+if pgrep -x nginx >/dev/null; then
+    nginx -s reload
+else
+    nginx
+fi
+
+curl -i --max-time 10 http://127.0.0.1/api/
+```
+
+
+**5. Pengujian Failover ke Todo**
+
+**Node:** Nanami dan Geto
+
+Menghentikan Nginx pada Nanami:
+
+```bash
+nginx -s quit
+```
+
+Mengirim request API melalui Geto:
+
+```bash
+curl -i --max-time 10 http://127.0.0.1/api/
+```
+
+Hasil pengujian menunjukkan `HTTP 200 OK` dengan `"worker":"todo"`, sehingga request tetap berhasil ketika Nanami tidak tersedia.
+
+**6. Pengujian Failover ke Kirara**
+
+**Node:** Todo dan Geto
+
+Setelah Nanami tidak tersedia, menghentikan Nginx pada Todo:
+
+```bash
+nginx -s quit
+```
+
+Mengirim kembali request melalui Geto:
+
+```bash
+curl -i --max-time 10 http://127.0.0.1/api/
+```
+
+Hasil pengujian menunjukkan `HTTP 200 OK` dengan `"worker":"kirara"`. Hal ini membuktikan bahwa Kirara dapat menangani request ketika kedua worker utama tidak tersedia.
+
+**7. Pemulihan Worker Utama**
+
+**Node:** Nanami dan Todo
+
+Menjalankan kembali Nginx pada kedua node:
+
+```bash
+nginx
+```
+
+Kemudian menguji kembali request dari Geto:
+
+```bash
+curl -i --max-time 10 http://127.0.0.1/api/
+```
+
+Hasil pengujian menunjukkan `HTTP 200 OK` dengan `"worker":"nanami"`, sehingga layanan utama kembali dapat memproses request.
+
+#### Hasil
+
+Konfigurasi load balancer berhasil diuji dalam tiga kondisi utama: request dialihkan ke Todo ketika Nanami tidak tersedia, dialihkan ke Kirara ketika kedua worker utama tidak tersedia, dan kembali diproses oleh Nanami setelah layanan utama dipulihkan. Seluruh pengujian tersebut menghasilkan `HTTP 200 OK`.
+
+#### Script
+
+- `/root/soal18_nanami.sh` — konfigurasi API worker Nanami.
+- `/root/soal18_todo.sh` — konfigurasi API worker Todo.
+- `/root/soal18_kirara.sh` — konfigurasi backup API worker Kirara.
+- `/root/soal18_geto.sh` — konfigurasi load balancer dan failover pada Geto.

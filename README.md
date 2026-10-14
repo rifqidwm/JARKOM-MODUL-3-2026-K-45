@@ -3029,3 +3029,381 @@ Dengan demikian, mekanisme caching frontend dan pembatasan request API telah ber
 
 - `/root/soal19_gojo.sh` — konfigurasi Proxy Cache, header `X-Cache-Status`, rate limiting API, validasi, dan reload Nginx.
 - `/etc/nginx/conf.d/soal19-cache-limit.conf` — konfigurasi cache zone dan rate-limit zone.
+
+### SOAL 20
+
+#### Diminta
+
+Melakukan pengujian performa layanan web melalui node Kusakabe menggunakan Apache Benchmark (`ab`) dengan total 600 request dan concurrency 30. Pengujian dilakukan terhadap homepage `http://jujutsu.k45.com/` dan endpoint API `http://jujutsu.k45.com/api/`.
+
+Mencatat throughput, waktu respons, failed requests, dan respons HTTP yang dihasilkan. Pengujian juga digunakan untuk memeriksa perilaku rate limiting pada Nginx Gojo serta membedakan penolakan request akibat HTTP 429 dari kegagalan koneksi atau layanan backend.
+
+#### Langkah-Langkah Pengerjaan & Pengujian
+
+**1. Mendapatkan Alamat IP melalui DHCP**
+
+**Node:** Kusakabe
+
+Memastikan Kusakabe memperoleh alamat IPv4 dan default gateway melalui DHCP server Tengen. Sebelum konfigurasi relay diperbaiki, Kusakabe gagal mendapatkan lease karena balasan DHCP dibuang oleh relay pada interface yang tidak tepat.
+
+**Perbaikan DHCP Relay**
+
+**Node:** Jichi
+
+Menghentikan proses DHCP relay sebelumnya menggunakan `Ctrl + C`, kemudian menjalankan relay dengan menetapkan interface downstream dan upstream secara eksplisit.
+
+```bash
+dhcrelay -4 -d -id eth3 -iu eth4 10.86.4.10
+```
+
+Keterangan:
+- `dhcrelay`: menjalankan ISC DHCP Relay Agent.
+- `-4`: menggunakan protokol IPv4.
+- `-d`: menjalankan proses di foreground agar log dapat dipantau langsung.
+- `-id eth3`: menetapkan `eth3` sebagai interface downstream untuk menerima request DHCP dari jaringan Kusakabe.
+- `-iu eth4`: menetapkan `eth4` sebagai interface upstream menuju DHCP server.
+- `10.86.4.10`: alamat IPv4 DHCP server Tengen.
+
+Proses relay dibiarkan berjalan selama pengujian agar request DHCP dari Kusakabe dapat diteruskan ke Tengen.
+
+**Node:** Kusakabe
+
+Menjalankan DHCP client:
+
+```bash
+udhcpc -i eth0 -n -q
+```
+
+Memverifikasi alamat IPv4 dan routing:
+
+```bash
+ip -br addr
+ip route
+```
+
+Hasil pengujian:
+
+```text
+udhcpc: broadcasting discover
+udhcpc: broadcasting select for 10.86.3.11, server 10.86.4.10
+udhcpc: lease of 10.86.3.11 obtained from 10.86.4.10, lease time 1800
+```
+
+Alamat dan routing yang diperoleh:
+
+```text
+eth0    UNKNOWN    10.86.3.11/24
+default via 10.86.3.1 dev eth0 metric 86659
+10.86.3.0/24 dev eth0 proto kernel scope link src 10.86.3.11
+```
+
+Keterangan: Kusakabe berhasil memperoleh IP `10.86.3.11/24` dengan lease 1800 detik dan default gateway `10.86.3.1`. Dengan demikian, konektivitas IPv4 dasar pada Kusakabe telah tersedia untuk pengujian benchmark.
+
+**2. Instalasi Apache Benchmark**
+
+**Node:** Kusakabe
+
+Memasang Apache Benchmark menggunakan package manager Alpine Linux.
+
+```bash
+apk add apache2-utils
+```
+
+Memverifikasi instalasi:
+
+```bash
+which ab
+ab -V
+```
+
+Hasil verifikasi:
+
+```text
+/usr/bin/ab
+This is ApacheBench, Version 2.3
+```
+
+Keterangan: Paket `apache2-utils` menyediakan program Apache Benchmark (`ab`) yang digunakan untuk mengirim request HTTP dalam jumlah besar dan mengukur performa layanan web.
+
+**3. Script Benchmark Kusakabe**
+
+**Node:** Kusakabe
+
+Script berikut menjalankan benchmark homepage dan API dengan parameter yang sama, yaitu 600 request dan concurrency 30. Output disimpan agar hasil pengujian dapat diperiksa kembali dan digunakan sebagai dokumentasi.
+
+Simpan sebagai `/root/soal20_kusakabe.sh`.
+
+```bash
+#!/bin/sh
+
+# Soal 20 - Apache Benchmark
+# Node: Kusakabe
+# Target: jujutsu.k45.com
+
+TARGET="http://jujutsu.k45.com"
+OUTPUT="/root/soal20-results"
+
+mkdir -p "$OUTPUT"
+
+echo "======================================"
+echo "SOAL 20 - APACHE BENCHMARK"
+echo "======================================"
+
+echo ""
+echo "[1] Informasi jaringan"
+ip -br addr
+ip route
+
+echo ""
+echo "[2] Benchmark Homepage"
+ab -n 600 -c 30 "$TARGET/" \
+  2>&1 | tee "$OUTPUT/homepage.txt"
+
+echo ""
+echo "[3] Benchmark API"
+ab -n 600 -c 30 "$TARGET/api/" \
+  2>&1 | tee "$OUTPUT/api.txt"
+
+echo ""
+echo "[4] Pengujian selesai"
+echo "Hasil tersimpan di:"
+echo "$OUTPUT/homepage.txt"
+echo "$OUTPUT/api.txt"
+```
+
+Menjalankan script:
+
+```bash
+chmod +x /root/soal20_kusakabe.sh
+/root/soal20_kusakabe.sh
+```
+
+Keterangan:
+- `TARGET` menentukan domain layanan yang diuji.
+- `OUTPUT` menentukan direktori penyimpanan hasil benchmark.
+- `mkdir -p` membuat direktori output jika belum tersedia.
+- `ip -br addr` dan `ip route` menampilkan alamat IP serta routing Kusakabe.
+- `ab -n 600 -c 30` mengirim 600 request dengan concurrency 30.
+- `tee` menampilkan output ke terminal sekaligus menyimpan hasil ke file.
+
+**Catatan:** Script tersebut merupakan script dokumentasi yang dapat dijalankan kembali. Hasil aktual yang tercatat pada laporan berasal dari pengujian manual yang telah dilakukan. Hasil benchmark perlu diperbarui jika script dijalankan ulang.
+
+**4. Pengujian Benchmark Homepage**
+
+**Node:** Kusakabe
+
+Menjalankan pengujian pada halaman utama melalui reverse proxy Gojo.
+
+```bash
+ab -n 600 -c 30 http://jujutsu.k45.com/
+```
+
+Parameter:
+- `-n 600`: mengirim total 600 request.
+- `-c 30`: menjalankan maksimal 30 request secara bersamaan.
+- URL `/`: menguji halaman utama frontend.
+
+Hasil aktual:
+
+```text
+Server Software: nginx
+Server Hostname: jujutsu.k45.com
+Server Port: 80
+
+Document Path: /
+Document Length: 30 bytes
+
+Concurrency Level: 30
+Time taken for tests: 0.085 seconds
+Complete requests: 600
+Failed requests: 0
+
+Total transferred: 108600 bytes
+HTML transferred: 18000 bytes
+
+Requests per second: 7059.49 [#/sec] (mean)
+Time per request: 4.250 [ms] (mean)
+Time per request: 0.142 [ms] (mean, across all concurrent requests)
+Transfer rate: 1247.82 [Kbytes/sec] received
+```
+
+Keterangan:
+- `Complete requests` menunjukkan seluruh 600 request selesai.
+- `Failed requests: 0` menunjukkan Apache Benchmark tidak melaporkan request gagal pada pengujian homepage.
+- `Requests per second` menunjukkan throughput rata-rata sebesar 7059,49 request per detik.
+- `Time per request` sebesar 4,250 ms merupakan rata-rata waktu per request yang disesuaikan dengan concurrency.
+- Nilai 0,142 ms merupakan rata-rata waktu per request jika memperhitungkan request yang berjalan secara bersamaan.
+
+Hasil ini menjadi data baseline homepage pada konfigurasi yang diuji.
+
+**5. Pengujian Benchmark API**
+
+**Node:** Kusakabe
+
+Menjalankan benchmark pada endpoint API melalui Gojo.
+
+```bash
+ab -n 600 -c 30 http://jujutsu.k45.com/api/
+```
+
+Hasil aktual:
+
+```text
+Server Software: nginx
+Server Hostname: jujutsu.k45.com
+Server Port: 80
+
+Document Path: /api/
+Document Length: 97 bytes
+
+Concurrency Level: 30
+Time taken for tests: 0.123 seconds
+Complete requests: 600
+Failed requests: 592
+  (Connect: 0, Receive: 0, Length: 592, Exceptions: 0)
+
+Non-2xx responses: 588
+Total transferred: 186664 bytes
+HTML transferred: 96412 bytes
+
+Requests per second: 4872.62 [#/sec] (mean)
+Time per request: 6.157 [ms] (mean)
+Time per request: 0.205 [ms] (mean, across all concurrent requests)
+Transfer rate: 1480.38 [Kbytes/sec] received
+```
+
+Keterangan:
+- `Complete requests: 600` menunjukkan 600 request telah selesai diproses oleh Apache Benchmark.
+- `Failed requests: 592` pada hasil ini berkaitan dengan perbedaan panjang respons (`Length`), bukan kegagalan koneksi.
+- `Connect: 0` berarti tidak ada kegagalan koneksi yang dilaporkan.
+- `Receive: 0` berarti tidak ada kegagalan penerimaan respons yang dilaporkan.
+- `Exceptions: 0` berarti tidak ada exception yang dilaporkan oleh Apache Benchmark.
+- `Non-2xx responses: 588` menunjukkan 588 respons memiliki status HTTP di luar rentang 2xx.
+- `Requests per second: 4872.62` menunjukkan throughput rata-rata pengujian API.
+- `Time per request: 6.157 ms` menunjukkan rata-rata waktu per request berdasarkan concurrency.
+
+Keterangan penting: `Failed requests` dan `Non-2xx responses` merupakan metrik yang berbeda. Respons yang memiliki status HTTP non-2xx belum tentu merupakan kegagalan koneksi. Perbedaan panjang respons juga dapat membuat Apache Benchmark menghitung request sebagai failed.
+
+**6. Pemeriksaan Konfigurasi Nginx**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Memeriksa lokasi file log yang digunakan oleh Nginx.
+
+```bash
+nginx -T 2>&1 | grep -E 'access_log|error_log'
+```
+
+Hasil:
+
+```text
+error_log /var/log/nginx/error.log;
+access_log /var/log/nginx/access.log;
+```
+
+Keterangan: Perintah menampilkan lokasi access log dan error log aktif. Access log digunakan untuk melihat status HTTP dari request yang diterima, sedangkan error log dapat digunakan untuk menyelidiki masalah pada proxy atau backend.
+
+**7. Pemeriksaan Access Log dan Rate Limiting**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Melihat request terbaru yang tercatat pada access log:
+
+```bash
+tail -n 50 /var/log/nginx/access.log
+```
+
+Menghitung distribusi status HTTP dari semua request yang tercatat:
+
+```bash
+awk '{print $9}' /var/log/nginx/access.log \
+  | sort | uniq -c | sort -nr
+```
+
+Hasil penghitungan:
+
+```text
+1193 429
+ 635 200
+  25 301
+   4 502
+```
+
+Keterangan:
+- `200`: request memperoleh respons sukses.
+- `301`: request memperoleh respons pengalihan.
+- `429`: request ditolak karena batas rate limiting terlampaui.
+- `502`: request memperoleh respons Bad Gateway.
+
+Menghitung status HTTP dari request yang berasal dari Kusakabe:
+
+```bash
+grep '10.86.3.11' /var/log/nginx/access.log \
+  | awk '{print $9}' | sort | uniq -c
+```
+
+Hasil penghitungan:
+
+```text
+ 613 200
+  11 301
+1177 429
+```
+
+Menghitung jumlah respons HTTP 429 dari Kusakabe:
+
+```bash
+grep '10.86.3.11' /var/log/nginx/access.log \
+  | awk '$9 == 429 {count++} END {
+      print "Total HTTP 429:", count+0
+    }'
+```
+
+Hasil:
+
+```text
+Total HTTP 429: 1177
+```
+
+Contoh baris access log:
+
+```text
+10.86.3.11 - - [15/Oct/2026:01:15:54 +0000] "GET /api HTTP/1.0" 429 162 "-" "ApacheBench/2.3"
+```
+
+Keterangan: Baris tersebut menunjukkan request `GET /api` dari Kusakabe (`10.86.3.11`) mendapatkan status HTTP 429. Ini membuktikan bahwa mekanisme rate limiting pada Gojo aktif selama request tersebut diproses.
+
+Angka pada access log merupakan akumulasi request yang tercatat selama pengujian, bukan jumlah respons dari satu benchmark tertentu saja.
+
+**8. Analisis Performa dan Rate Limiting**
+
+Hasil benchmark dan pemeriksaan log memberikan beberapa temuan:
+
+1. **Homepage:** 600 request selesai dengan 0 failed requests, throughput 7059,49 request/detik, dan rata-rata waktu per request 4,250 ms.
+2. **API:** throughput yang tercatat sebesar 4872,62 request/detik dengan rata-rata waktu per request 6,157 ms. Apache Benchmark melaporkan 592 failed requests akibat perbedaan panjang respons dan 588 non-2xx responses.
+3. **Rate limiting:** terdapat 1177 respons HTTP 429 dari Kusakabe pada access log yang diperiksa. Ini menunjukkan bahwa request dari klien tersebut mengalami pembatasan.
+4. **Kegagalan koneksi:** benchmark API mencatat 0 connect errors, 0 receive errors, dan 0 exceptions. Karena itu, hasil failed requests tidak boleh langsung diinterpretasikan sebagai kegagalan jaringan.
+5. **HTTP 502:** empat respons 502 ditemukan dalam keseluruhan access log yang diperiksa. Data tersebut tidak cukup untuk memastikan penyebabnya; pemeriksaan error log diperlukan jika ingin mengidentifikasi masalah backend.
+6. **Perbandingan baseline:** homepage dan API memiliki karakteristik respons berbeda. Angka throughput keduanya tidak dapat digunakan untuk mengisolasi pengaruh rate limiting karena endpoint dan responsnya berbeda. Perbandingan kuantitatif sebelum dan sesudah rate limiting memerlukan dua pengujian pada endpoint yang sama, dengan parameter identik, satu kali tanpa pembatasan dan satu kali dengan pembatasan aktif.
+
+<img width="539" height="718" alt="Screenshot 2026-10-15 at 01 53 00" src="https://github.com/user-attachments/assets/50359f88-a1df-43cd-a94f-3a137b14d927" />
+
+<img width="386" height="280" alt="Screenshot 2026-10-15 at 01 52 44" src="https://github.com/user-attachments/assets/64285fff-297e-4987-97f5-a2af4b4767f9" />
+
+#### Hasil
+
+Apache Benchmark berhasil dipasang pada Kusakabe dan digunakan untuk menguji homepage serta endpoint API dengan 600 request dan concurrency 30.
+
+Pengujian homepage menghasilkan throughput 7059,49 request/detik, waktu rata-rata 4,250 ms per request, dan 0 failed requests. Pengujian API menghasilkan throughput 4872,62 request/detik dan waktu rata-rata 6,157 ms per request. Apache Benchmark melaporkan 592 failed requests akibat perbedaan panjang respons serta 588 non-2xx responses.
+
+Pemeriksaan access log Gojo menunjukkan 1177 respons HTTP 429 dari Kusakabe. Hal ini menjadi bukti bahwa rate limiting aktif dan menolak sebagian request yang melampaui batas. Hasil tersebut membedakan penolakan request akibat rate limiting dari kegagalan koneksi jaringan.
+
+Pengujian Soal 20 memberikan data performa awal layanan web dan bukti perilaku rate limiting pada reverse proxy Nginx. Namun, perbandingan numerik sebelum dan sesudah rate limiting masih memerlukan benchmark endpoint yang sama pada kedua kondisi.
+
+#### Script
+
+- `/root/soal20_kusakabe.sh` — menjalankan benchmark homepage dan API serta menyimpan hasil ke file.
+- `/root/soal20-results/homepage.txt` — output benchmark homepage jika script dijalankan.
+- `/root/soal20-results/api.txt` — output benchmark API jika script dijalankan.
+- `/var/log/nginx/access.log` — access log pada Gojo untuk pemeriksaan status HTTP dan bukti rate limiting.
+- `/var/log/nginx/error.log` — error log pada Gojo untuk penyelidikan kesalahan proxy atau backend bila diperlukan.

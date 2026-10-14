@@ -1971,3 +1971,274 @@ Hasil yang diharapkan adalah respons HTTP `200 OK` dengan keluaran JSON yang men
 - Pengujian dari client Itadori membuktikan bahwa resolusi domain, jalur frontend, dan jalur API berfungsi sesuai konfigurasi.
 
 Script: `scripts/soal16_gojo.sh`, dijalankan di node Gojo (`10.86.1.4`).
+
+# SOAL 17
+
+**Diminta:** Mengonfigurasi penerusan IP asli client melalui reverse proxy Gojo (`10.86.1.4`) dan load balancer Geto (`10.86.4.2`) menuju worker API Nanami (`10.86.4.5`) atau Todo (`10.86.4.6`). Konfigurasi harus memastikan bahwa header IP client hanya dipercaya dari proxy yang tepercaya, kemudian IP asli client dicatat ke database `db_shibuya_K45` pada node Yaga (`10.86.4.8`). Pengujian dilakukan dari client Itadori dan Ino untuk memastikan IP yang dicatat bukan IP milik Geto.
+
+## Langkah-Langkah Pengerjaan & Eksekusi Script
+
+Script konfigurasi dijalankan pada node yang bersangkutan: Gojo untuk reverse proxy, Geto untuk trusted proxy dan load balancer, serta Nanami dan Todo untuk validasi IP pada aplikasi API. Itadori dan Ino digunakan untuk pengujian, sedangkan Yaga digunakan untuk memeriksa hasil pencatatan database.
+
+### Langkah 1, Membuat dan Menjalankan Script pada Gojo
+
+Script ini dijalankan pada node **Gojo (`10.86.1.4`)** untuk memastikan request API diteruskan ke Geto dengan membawa IP asli client melalui header `X-Real-IP`.
+
+Buat file `/root/soal17_gojo.sh`:
+
+**Bash**
+
+```bash
+cat > /root/soal17_gojo.sh <<'EOF'
+#!/bin/bash
+set -e
+
+# 1. Backup konfigurasi awal jika backup belum tersedia
+if [ -f /etc/nginx/sites-available/default ] && \
+   [ ! -f /etc/nginx/sites-available/default.bak.soal17 ]; then
+    cp /etc/nginx/sites-available/default \
+       /etc/nginx/sites-available/default.bak.soal17
+fi
+
+# 2. Pastikan lokasi /api diteruskan ke Geto
+# Pertahankan konfigurasi lokasi lain yang sudah ada.
+CONFIG=/etc/nginx/sites-available/default
+
+if ! grep -q 'location /api' "$CONFIG"; then
+    echo "ERROR: location /api belum ditemukan."
+    echo "Tambahkan konfigurasi API secara manual ke server block yang benar."
+    exit 1
+fi
+
+echo "Periksa konfigurasi API:"
+grep -A 8 'location /api' "$CONFIG"
+
+# 3. Validasi konfigurasi
+nginx -t
+
+# 4. Muat ulang Nginx
+systemctl reload nginx
+
+echo "Verifikasi konfigurasi Gojo selesai."
+EOF
+
+chmod +x /root/soal17_gojo.sh
+bash /root/soal17_gojo.sh
+```
+
+Pastikan konfigurasi `location /api` pada Gojo memiliki pengaturan berikut:
+
+```nginx
+location /api {
+    proxy_pass http://10.86.4.2;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+**Catatan:** Script Gojo di atas memeriksa konfigurasi yang sudah ada dan tidak menambahkan ulang blok `location /api`. Jika konfigurasi belum sesuai, perbaiki blok tersebut terlebih dahulu, lalu jalankan `nginx -t` dan `systemctl reload nginx`.
+
+### Langkah 2, Membuat dan Menjalankan Script pada Geto
+
+Script ini dijalankan pada node **Geto (`10.86.4.2`)** untuk mengonfigurasi trusted proxy dari Gojo dan load balancing ke Nanami serta Todo.
+
+Buat file `/root/soal17_geto.sh`:
+
+**Bash**
+
+```bash
+cat > /root/soal17_geto.sh <<'EOF'
+#!/bin/bash
+set -e
+
+# 1. Memastikan Nginx tersedia
+if ! command -v nginx >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y nginx
+fi
+
+# 2. Backup konfigurasi awal
+if [ -f /etc/nginx/sites-available/default ] && \
+   [ ! -f /etc/nginx/sites-available/default.bak.soal17 ]; then
+    cp /etc/nginx/sites-available/default \
+       /etc/nginx/sites-available/default.bak.soal17
+fi
+
+# 3. Hanya mempercayai header dari Gojo
+cat > /etc/nginx/conf.d/soal17-trusted-proxy.conf <<'EOT'
+map $remote_addr $verified_client_ip {
+    default $remote_addr;
+    10.86.1.4 $http_x_real_ip;
+}
+EOT
+
+# 4. Mengonfigurasi load balancer API
+cat > /etc/nginx/sites-available/default <<'EOT'
+upstream api_cluster {
+    server 10.86.4.5:80 weight=3;
+    server 10.86.4.6:80 weight=1;
+}
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name jujutsu.k45.com www.jujutsu.k45.com _;
+
+    location / {
+        proxy_pass http://api_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $verified_client_ip;
+        proxy_set_header X-Forwarded-For $verified_client_ip;
+    }
+}
+EOT
+
+# 5. Validasi dan reload Nginx
+nginx -t
+
+if systemctl is-active --quiet nginx; then
+    systemctl reload nginx
+else
+    systemctl enable --now nginx
+fi
+
+echo "Konfigurasi Geto selesai."
+EOF
+
+chmod +x /root/soal17_geto.sh
+bash /root/soal17_geto.sh
+```
+
+### Langkah 3, Memastikan Validasi IP Client pada Nanami
+
+Script ini dijalankan pada node **Nanami (`10.86.4.5`)**. Sebelum mengubah aplikasi, periksa dahulu kode API yang sudah tersedia dan pastikan aplikasi hanya menerima header `X-Real-IP` dari Geto.
+
+Buat file pemeriksaan `/root/soal17_nanami.sh`:
+
+**Bash**
+
+```bash
+cat > /root/soal17_nanami.sh <<'EOF'
+#!/bin/bash
+set -e
+
+echo "Alamat IP Nanami:"
+ip -br addr
+
+echo
+echo "Mencari validasi IP pada aplikasi API:"
+grep -RniE 'HTTP_X_REAL_IP|REMOTE_ADDR|FILTER_VALIDATE_IP' \
+    /var/www/html --include='*.php' || true
+
+echo
+echo "Pastikan aplikasi hanya menerima X-Real-IP jika REMOTE_ADDR adalah Geto."
+EOF
+
+chmod +x /root/soal17_nanami.sh
+bash /root/soal17_nanami.sh
+```
+
+Kode PHP pada endpoint API harus menerapkan logika validasi seperti berikut:
+
+```php
+$remote = $_SERVER['REMOTE_ADDR'] ?? '';
+$forwarded = $_SERVER['HTTP_X_REAL_IP'] ?? '';
+
+$client = (
+    $remote === '10.86.4.2' &&
+    filter_var($forwarded, FILTER_VALIDATE_IP)
+)
+    ? $forwarded
+    : $remote;
+```
+
+Variabel `$client` harus digunakan sebagai nilai `client_ip` saat menyimpan log request ke database. Jika kode aplikasi belum menerapkan logika tersebut, perbaiki file PHP endpoint yang benar sebelum pengujian. Script pemeriksaan di atas tidak mengubah kode aplikasi secara otomatis.
+
+### Langkah 4, Memastikan Validasi IP Client pada Todo
+
+Script ini dijalankan pada node **Todo (`10.86.4.6`)** untuk memeriksa agar worker kedua menggunakan mekanisme validasi IP yang sama dengan Nanami.
+
+Buat file `/root/soal17_todo.sh`:
+
+**Bash**
+
+```bash
+cat > /root/soal17_todo.sh <<'EOF'
+#!/bin/bash
+set -e
+
+echo "Alamat IP Todo:"
+ip -br addr
+
+echo
+echo "Mencari validasi IP pada aplikasi API:"
+grep -RniE 'HTTP_X_REAL_IP|REMOTE_ADDR|FILTER_VALIDATE_IP' \
+    /var/www/html --include='*.php' || true
+
+echo
+echo "Pastikan aplikasi hanya menerima X-Real-IP jika REMOTE_ADDR adalah Geto."
+EOF
+
+chmod +x /root/soal17_todo.sh
+bash /root/soal17_todo.sh
+```
+
+Jika Todo memiliki kode endpoint API sendiri, pastikan kode tersebut juga menerapkan validasi IP seperti pada Langkah 3.
+
+### Langkah 5, Menguji IP Asli Client dari Itadori
+
+Pengujian dijalankan pada node **Itadori (`10.86.2.10`)** untuk memastikan IP client Network 2 diteruskan sampai API.
+
+**Bash**
+
+```bash
+curl -i --max-time 10 http://jujutsu.k45.com/api/
+```
+
+Periksa respons API. Nilai `client_ip` yang diharapkan adalah `10.86.2.10`, bukan `10.86.4.2`.
+
+### Langkah 6, Menguji IP Asli Client dari Ino
+
+Pengujian dijalankan pada node **Ino** untuk memeriksa penerusan IP client dari Network 3.
+
+**Bash**
+
+```bash
+ip -br addr
+curl -i --max-time 10 http://jujutsu.k45.com/api/
+```
+
+Cocokkan nilai `client_ip` pada respons API dengan alamat IP Ino yang terlihat pada hasil `ip -br addr`.
+
+### Langkah 7, Memverifikasi Log Database pada Yaga
+
+Verifikasi dijalankan pada node **Yaga (`10.86.4.8`)** untuk memastikan request dari client tercatat dengan IP asli dan nama worker API yang memprosesnya.
+
+**Bash**
+
+```bash
+mariadb -u root db_shibuya_K45 -e "
+SELECT id, client_ip, worker_node, created_at
+FROM request_logs
+ORDER BY id DESC
+LIMIT 10;"
+```
+
+Periksa entri terbaru setelah pengujian dari Itadori dan Ino. IP pada kolom `client_ip` harus sesuai dengan IP client yang mengirim request, bukan IP Geto.
+
+## Hasil
+
+- Gojo meneruskan request API ke Geto dengan membawa header `X-Real-IP`.
+- Geto dikonfigurasi sebagai load balancer menuju Nanami dan Todo dengan bobot masing-masing `3` dan `1`.
+- Nanami dan Todo harus memvalidasi bahwa header IP client hanya dipercaya jika request berasal dari Geto.
+- Itadori dan Ino digunakan untuk menguji penerusan IP client dari dua network berbeda.
+- Yaga digunakan untuk memverifikasi bahwa IP asli client dan worker pemroses request tercatat pada database `db_shibuya_K45`.
+
+**Script:**
+- `scripts/soal17_gojo.sh`, dijalankan di node Gojo (`10.86.1.4`).
+- `scripts/soal17_geto.sh`, dijalankan di node Geto (`10.86.4.2`).
+- `scripts/soal17_nanami.sh`, dijalankan di node Nanami (`10.86.4.5`).
+- `scripts/soal17_todo.sh`, dijalankan di node Todo (`10.86.4.6`).
+
+Script pemeriksaan Nanami dan Todo hanya membantu memeriksa kode yang ada; keduanya tidak otomatis mengubah aplikasi. Pengujian dari Itadori dan Ino serta query database pada Yaga dijalankan secara manual untuk membuktikan hasil konfigurasi.

@@ -2682,3 +2682,350 @@ Konfigurasi load balancer berhasil diuji dalam tiga kondisi utama: request diali
 - `/root/soal18_todo.sh` — konfigurasi API worker Todo.
 - `/root/soal18_kirara.sh` — konfigurasi backup API worker Kirara.
 - `/root/soal18_geto.sh` — konfigurasi load balancer dan failover pada Geto.
+
+### SOAL 19 
+
+#### Diminta
+
+Mengonfigurasi Nginx pada Gojo untuk mengoptimalkan layanan frontend menggunakan Proxy Caching dengan masa berlaku 10 menit, menambahkan header `X-Cache-Status`, serta menerapkan rate limiting pada endpoint `/api` dengan batas 10 request per detik per IP klien. Membuktikan bahwa cache menghasilkan status `MISS` pada akses pertama dan `HIT` pada akses berikutnya, serta menguji respons ketika batas request terlampaui.
+
+#### Langkah-Langkah Pengerjaan & Pengujian
+
+**1. Backup Konfigurasi Nginx**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Membuat backup konfigurasi virtual host sebelum melakukan perubahan agar konfigurasi sebelumnya dapat dipulihkan apabila terjadi kesalahan.
+
+Keterangan Script soal19_gojo.sh
+
+Script dijalankan pada node Gojo sebagai root untuk mengonfigurasi Nginx Proxy Cache dan Rate Limiting.
+
+1. Inisialisasi dan Backup Konfigurasi
+```
+set -Eeuo pipefail
+
+CONF="/etc/nginx/sites-available/default"
+ZONE="/etc/nginx/conf.d/soal19-cache-limit.conf"
+BACKUP="/root/backup-soal19-final-$(date +%Y%m%d-%H%M%S)"
+
+mkdir -p "$BACKUP"
+cp -a "$CONF" "$BACKUP/default"
+```
+
+Keterangan: Mengaktifkan penanganan error pada Bash, menentukan lokasi konfigurasi Nginx, dan membuat backup virtual host sebelum perubahan dilakukan agar konfigurasi sebelumnya dapat dipulihkan.
+
+2. Menyiapkan Direktori Cache
+
+mkdir -p /var/cache/nginx/proxy_cache
+
+Keterangan: Membuat direktori penyimpanan file cache yang digunakan Nginx untuk menyimpan respons frontend.
+
+3. Membuat Cache Zone dan Rate Limit Zone
+```
+proxy_cache_path /var/cache/nginx/proxy_cache
+    levels=1:2
+    keys_zone=frontend_cache:10m
+    max_size=100m
+    inactive=10m
+    use_temp_path=off;
+
+limit_req_zone $binary_remote_addr
+    zone=api_limit:10m
+    rate=10r/s;
+```
+
+Keterangan:
+
+proxy_cache_path: menentukan lokasi penyimpanan cache.
+
+levels=1:2: mengatur struktur direktori cache.
+
+keys_zone=frontend_cache:10m: menyediakan shared memory sebesar 10 MB untuk metadata cache.
+
+max_size=100m: membatasi ukuran cache hingga 100 MB.
+
+inactive=10m: menghapus cache yang tidak digunakan selama 10 menit.
+
+use_temp_path=off: menyimpan file cache pada direktori cache tanpa direktori sementara terpisah.
+
+limit_req_zone: membuat zona pembatasan request berdasarkan alamat IP klien.
+
+rate=10r/s: menetapkan batas rata-rata 10 request per detik per IP.
+
+4. Memvalidasi Struktur Virtual Host
+```
+grep -qE '^[[:space:]]*location[[:space:]]+/[[:space:]]*\{' "$CONF"
+
+grep -qE '^[[:space:]]*location[[:space:]]+/api[[:space:]]*\{' "$CONF"
+```
+
+
+Keterangan: Memastikan blok location / dan location /api tersedia sebelum directive cache dan rate limiting ditambahkan.
+
+5. Memperbaiki URL Proxy
+```
+sed -i \
+    -e 's|\[http://10\.86\.4\.2\](http://10\.86\.4\.2)|http://10.86.4.2|g' \
+    -e 's|http\\://frontend_cluster|http://frontend_cluster|g' \
+    "$CONF"
+```
+
+Keterangan: Memperbaiki format URL yang mungkin tersalin dari Markdown agar directive proxy_pass menggunakan alamat yang dikenali Nginx.
+
+6. Menerapkan Proxy Cache pada Frontend
+```
+proxy_cache frontend_cache;
+proxy_cache_valid 200 10m;
+proxy_cache_methods GET HEAD;
+proxy_cache_bypass $http_authorization;
+proxy_no_cache $http_authorization;
+add_header X-Cache-Status $upstream_cache_status always;
+```
+
+Keterangan:
+
+proxy_cache frontend_cache: mengaktifkan cache pada halaman frontend.
+
+proxy_cache_valid 200 10m: menyimpan respons HTTP 200 selama 10 menit.
+
+proxy_cache_methods GET HEAD: mengizinkan metode GET dan HEAD untuk cache.
+
+proxy_cache_bypass $http_authorization: melewati cache jika request memiliki header Authorization.
+
+proxy_no_cache $http_authorization: mencegah respons request terautentikasi disimpan ke cache.
+
+add_header X-Cache-Status: menampilkan status cache pada header respons agar dapat diverifikasi menggunakan curl.
+
+7. Menerapkan Rate Limiting pada API
+```
+limit_req zone=api_limit burst=10 nodelay;
+limit_req_status 429;
+```
+
+Keterangan:
+
+limit_req zone=api_limit: menerapkan pembatasan request menggunakan zona yang sudah dibuat.
+
+burst=10: mengizinkan hingga 10 request tambahan dalam antrean burst.
+
+nodelay: tidak menunda request yang masih berada dalam batas burst.
+
+limit_req_status 429: menggunakan HTTP 429 Too Many Requests untuk request yang ditolak akibat batas rate limiting.
+
+8. Validasi dan Reload Nginx
+```
+nginx -t
+nginx -s reload
+```
+
+Keterangan: Memeriksa sintaks konfigurasi sebelum memuat ulang Nginx. Reload menerapkan konfigurasi baru tanpa menghentikan layanan secara penuh.
+
+9. Verifikasi Konfigurasi
+```
+nginx -T 2>&1 | grep -n -E \
+'proxy_cache_path|keys_zone=frontend_cache|rate=10r/s|proxy_cache frontend_cache|proxy_cache_valid 200 10m|X-Cache-Status|limit_req zone=api_limit|limit_req_status 429'
+```
+
+Keterangan: Menampilkan baris konfigurasi aktif yang berkaitan dengan cache, header status, dan rate limiting untuk memastikan directive sudah dimuat oleh Nginx.
+
+Keterangan Pengujian
+
+Pengujian Cache
+```
+curl -s -o /dev/null -D - \
+  -H 'Host: jujutsu.k45.com' http://127.0.0.1/ \
+  | grep -iE 'HTTP/|X-Cache-Status'
+```
+
+Perintah mengirim request ke halaman frontend melalui Gojo dan menampilkan status HTTP beserta header cache. Hasil pengujian menunjukkan MISS pada akses pertama dan HIT pada akses berikutnya.
+
+Pengujian Rate Limiting
+```
+for i in $(seq 1 30); do
+  curl -s -o /dev/null \
+    --max-time 3 \
+    -w "Request $i: HTTP %{http_code}\n" \
+    -H 'Host: jujutsu.k45.com' \
+    http://127.0.0.1/api
+done
+```
+
+Perintah mengirim 30 request secara beruntun ke endpoint /api. Hasil pengujian memperlihatkan respons HTTP 301 dari upstream dan HTTP 429 ketika rate limiting menolak request berlebih.
+
+Script membuat direktori backup berdasarkan tanggal dan waktu eksekusi:
+```bash
+BACKUP="/root/backup-soal19-final-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BACKUP"
+cp -a /etc/nginx/sites-available/default "$BACKUP/default"
+```
+
+**2. Konfigurasi Proxy Cache dan Rate Limit Zone**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Membuat direktori penyimpanan cache dan file `/etc/nginx/conf.d/soal19-cache-limit.conf` yang berisi konfigurasi cache serta rate limiting.
+
+```nginx
+proxy_cache_path /var/cache/nginx/proxy_cache
+    levels=1:2
+    keys_zone=frontend_cache:10m
+    max_size=100m
+    inactive=10m
+    use_temp_path=off;
+
+limit_req_zone $binary_remote_addr
+    zone=api_limit:10m
+    rate=10r/s;
+```
+
+Keterangan:
+- `proxy_cache_path` menentukan lokasi penyimpanan cache.
+- `levels=1:2` mengatur struktur direktori penyimpanan cache.
+- `keys_zone=frontend_cache:10m` menyediakan shared memory sebesar 10 MB untuk metadata cache.
+- `max_size=100m` menetapkan batas ukuran cache sebesar 100 MB.
+- `inactive=10m` mengatur penghapusan cache yang tidak digunakan selama 10 menit.
+- `limit_req_zone` membuat zona pembatasan request berdasarkan IP klien.
+- `rate=10r/s` menetapkan batas rata-rata 10 request per detik per IP.
+
+**3. Penerapan Proxy Cache pada Frontend**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Mengaktifkan Proxy Cache pada `location /` yang meneruskan request ke upstream `frontend_cluster`, yaitu Maki (`10.86.4.3`) dan Panda (`10.86.4.4`).
+
+```nginx
+location / {
+    proxy_cache frontend_cache;
+    proxy_cache_valid 200 10m;
+    proxy_cache_methods GET HEAD;
+    proxy_cache_bypass $http_authorization;
+    proxy_no_cache $http_authorization;
+    add_header X-Cache-Status $upstream_cache_status always;
+
+    proxy_pass http://frontend_cluster;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Keterangan:
+- `proxy_cache frontend_cache` mengaktifkan cache untuk halaman frontend.
+- `proxy_cache_valid 200 10m` menyimpan respons HTTP 200 selama 10 menit.
+- `proxy_cache_methods GET HEAD` menentukan metode request yang dapat menggunakan cache.
+- `proxy_cache_bypass` dan `proxy_no_cache` mencegah penggunaan serta penyimpanan cache untuk request dengan header Authorization.
+- `add_header X-Cache-Status` menampilkan status cache pada header respons.
+
+**4. Penerapan Rate Limiting pada API**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Menerapkan pembatasan request pada `location /api` yang meneruskan request ke Geto (`10.86.4.2`).
+
+```nginx
+location /api {
+    limit_req zone=api_limit burst=10 nodelay;
+    limit_req_status 429;
+
+    proxy_pass http://10.86.4.2;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Keterangan:
+- `limit_req zone=api_limit` menerapkan pembatasan request berdasarkan zona yang telah dibuat.
+- `burst=10` mengizinkan hingga 10 request tambahan dalam batas burst.
+- `nodelay` memproses request yang masih berada dalam batas burst tanpa penundaan.
+- `limit_req_status 429` menetapkan HTTP 429 Too Many Requests untuk request yang ditolak akibat rate limiting.
+- `proxy_pass` meneruskan request API ke load balancer Geto.
+
+**5. Validasi dan Reload Nginx**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Memvalidasi konfigurasi setelah penambahan directive cache dan rate limiting.
+
+```bash
+nginx -t
+nginx -s reload
+```
+
+Hasil pengujian menunjukkan:
+```text
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+
+Nginx berhasil dimuat ulang sehingga konfigurasi baru dapat diterapkan.
+
+**6. Pengujian Proxy Cache MISS dan HIT**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Mengirim request ke halaman frontend melalui Gojo dengan header Host `jujutsu.k45.com`.
+
+Perintah pengujian:
+```bash
+curl -s -o /dev/null -D - \
+  -H 'Host: jujutsu.k45.com' http://127.0.0.1/ \
+  | grep -iE 'HTTP/|X-Cache-Status'
+```
+
+Perintah dijalankan dua kali untuk membandingkan status cache.
+
+Hasil akses pertama:
+```text
+HTTP/1.1 200 OK
+X-Cache-Status: MISS
+```
+
+Hasil akses kedua:
+```text
+HTTP/1.1 200 OK
+X-Cache-Status: HIT
+```
+
+Hasil tersebut membuktikan bahwa request pertama mengambil respons dari upstream, sedangkan request berikutnya menggunakan respons yang telah tersimpan dalam cache.
+
+**7. Pengujian Rate Limiting pada API**
+
+**Node:** Gojo (`10.86.1.4`)
+
+Mengirim 30 request secara beruntun ke endpoint `/api` untuk menguji pembatasan request per IP klien.
+
+```bash
+for i in $(seq 1 30); do
+  curl -s -o /dev/null \
+    --max-time 3 \
+    -w "Request $i: HTTP %{http_code}\n" \
+    -H 'Host: jujutsu.k45.com' \
+    http://127.0.0.1/api
+done
+```
+
+Hasil pengujian menunjukkan respons HTTP 301 dan HTTP 429.
+
+- **HTTP 301:** request mendapatkan respons pengalihan dari layanan upstream.
+- **HTTP 429:** request ditolak karena batas rate limiting terlampaui.
+
+Munculnya HTTP 429 membuktikan bahwa mekanisme pembatasan request telah aktif. Request yang memperoleh HTTP 301 tidak mengikuti pengalihan secara otomatis karena perintah `curl` tidak menggunakan opsi `-L`.
+
+#### Hasil
+
+Konfigurasi Nginx Proxy Cache dan Rate Limiting pada Gojo berhasil diterapkan dan diuji. Validasi konfigurasi menggunakan `nginx -t` berhasil, kemudian Nginx berhasil di-reload.
+
+Pengujian frontend menghasilkan `X-Cache-Status: MISS` pada akses pertama dan `X-Cache-Status: HIT` pada akses berikutnya, dengan respons HTTP 200 OK. Pengujian rate limiting melalui 30 request beruntun menghasilkan HTTP 429 pada sejumlah request yang melampaui batas.
+
+Dengan demikian, mekanisme caching frontend dan pembatasan request API telah berjalan sesuai tujuan praktikum.
+
+<img width="552" height="59" alt="Screenshot 2026-10-15 at 01 17 23" src="https://github.com/user-attachments/assets/86c77dec-fe55-431d-8735-29ae66781ae7" />
+
+<img width="407" height="90" alt="Screenshot 2026-10-15 at 01 21 39" src="https://github.com/user-attachments/assets/9366d272-0d54-4c17-bd13-24aaeed4291f" />
+
+#### Script
+
+- `/root/soal19_gojo.sh` — konfigurasi Proxy Cache, header `X-Cache-Status`, rate limiting API, validasi, dan reload Nginx.
+- `/etc/nginx/conf.d/soal19-cache-limit.conf` — konfigurasi cache zone dan rate-limit zone.

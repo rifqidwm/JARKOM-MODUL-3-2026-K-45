@@ -1861,3 +1861,113 @@ Pastikan catatan request dari masing-masing worker tercatat dengan benar.
 <img width="450" height="156" alt="Screenshot 2026-10-14 at 00 54 34" src="https://github.com/user-attachments/assets/1d65f589-063e-4136-baad-1f2ffadd9b3b" />
 
 soal15_geto.sh dijalankan di node geto.
+
+### SOAL 16
+
+**Diminta:** Mengonfigurasi Nginx pada node Gojo (`10.86.1.4`) sebagai *reverse proxy* untuk domain `jujutsu.k45.com` dan `www.jujutsu.k45.com`. Request ke path utama (`/`) diteruskan ke frontend Maki (`10.86.4.3`) dan Panda (`10.86.4.4`) menggunakan metode *Round Robin*. Sementara itu, request ke path `/api` diteruskan ke Geto (`10.86.4.2`), yang berfungsi sebagai *load balancer* untuk API worker Nanami (`10.86.4.5`) dan Todo (`10.86.4.6`). Fungsionalitas konfigurasi dibuktikan melalui pengujian dari client Itadori.
+
+### Langkah-Langkah Pengerjaan & Pengujian
+
+Konfigurasi Nginx dilakukan pada node Gojo (`10.86.1.4`) untuk meneruskan request frontend ke Maki dan Panda serta request API ke Geto. Setelah konfigurasi diterapkan, pengujian dilakukan dari client Itadori.
+
+**Langkah 1, Mengonfigurasi Nginx sebagai Reverse Proxy pada Gojo**
+
+Konfigurasi Nginx pada Gojo diatur dengan dua jalur utama, yaitu `/` untuk frontend dan `/api` untuk API. Jalur frontend menggunakan metode *Round Robin* melalui upstream `frontend_cluster`, sedangkan jalur API diarahkan ke Geto.
+
+Konfigurasi yang digunakan:
+
+```
+nginx
+upstream frontend_cluster {
+    server 10.86.4.3;
+    server 10.86.4.4;
+}
+
+server {
+    listen 80;
+    server_name jujutsu.k45.com www.jujutsu.k45.com;
+
+    location /api {
+        proxy_pass http://10.86.4.2;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        proxy_pass http://frontend_cluster;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+}
+```
+
+Konfigurasi tersebut diterapkan pada `/etc/nginx/sites-available/default` di node Gojo, kemudian divalidasi menggunakan `nginx -t` dan Nginx dijalankan kembali.
+
+**Screenshot 1 — Konfigurasi dan Validasi Nginx**
+<img width="484" height="50" alt="Screenshot 2026-10-14 at 23 15 50" src="https://github.com/user-attachments/assets/c5150fde-2ae3-4227-b2be-07b5b4c98a17" />
+
+**Langkah 2, Menguji Resolusi Domain dari Client (Itadori)**
+
+Pengujian dilakukan untuk memastikan domain utama dan domain `www` dapat diresolusikan ke alamat IP Gojo (`10.86.1.4`).
+
+Jalankan perintah berikut pada client Itadori:
+
+```bash
+getent hosts jujutsu.k45.com
+getent hosts www.jujutsu.k45.com
+```
+
+Hasil yang diharapkan adalah kedua domain mengarah ke IP `10.86.1.4`, sehingga request client dapat diteruskan ke Nginx pada Gojo.
+
+**Screenshot 2 — Pengujian Resolusi Domain**
+<img width="510" height="63" alt="Screenshot 2026-10-14 at 23 16 28" src="https://github.com/user-attachments/assets/d1350be8-b40e-46d7-bb9b-bf2025c72506" />
+
+**Langkah 3, Menguji Reverse Proxy Frontend**
+
+Pengujian dilakukan untuk memastikan request ke domain utama diteruskan oleh Gojo ke frontend Maki dan Panda.
+
+Jalankan perintah berikut pada client Itadori:
+
+```bash
+curl -i http://jujutsu.k45.com/
+```
+
+Untuk menguji pembagian request ke kedua frontend, jalankan beberapa request secara berurutan:
+
+```bash
+for i in 1 2 3 4; do
+    curl -s http://jujutsu.k45.com/
+    echo
+done
+```
+
+Hasil yang diharapkan adalah respons HTTP `200 OK`. Respons dari beberapa request memperlihatkan hostname `maki` dan `panda`, yang membuktikan bahwa request didistribusikan ke kedua frontend menggunakan metode *Round Robin*.
+
+**Screenshot 3 — Pengujian Frontend dan Round Robin**
+<img width="441" height="258" alt="Screenshot 2026-10-14 at 23 17 10" src="https://github.com/user-attachments/assets/2e03beb5-2af3-4f2e-9bf6-d2cf60db0d61" />
+
+**Langkah 4, Menguji Reverse Proxy API melalui Geto**
+
+Pengujian dilakukan untuk memastikan request ke path `/api` diteruskan oleh Gojo ke Geto (`10.86.4.2`), kemudian diproses oleh API worker Nanami atau Todo sesuai konfigurasi *load balancing* pada Soal 15.
+
+Jalankan perintah berikut pada client Itadori:
+
+```bash
+curl -i http://jujutsu.k45.com/api/
+```
+
+Hasil yang diharapkan adalah respons HTTP `200 OK` dengan keluaran JSON yang menunjukkan request berhasil diproses oleh worker API.
+
+**Screenshot 4 — Pengujian API**
+<img width="347" height="227" alt="Screenshot 2026-10-14 at 23 17 43" src="https://github.com/user-attachments/assets/c8566587-4674-4d3f-ac7d-977a9dbc3acc" />
+
+### Hasil
+
+- Nginx pada Gojo berhasil dikonfigurasi sebagai *reverse proxy* untuk domain `jujutsu.k45.com` dan `www.jujutsu.k45.com`.
+- Request ke path `/` berhasil diteruskan ke frontend Maki (`10.86.4.3`) dan Panda (`10.86.4.4`) menggunakan metode *Round Robin*.
+- Request ke path `/api` berhasil diteruskan ke Geto (`10.86.4.2`), yang kemudian mendistribusikan request ke API worker Nanami atau Todo.
+- Pengujian dari client Itadori membuktikan bahwa resolusi domain, jalur frontend, dan jalur API berfungsi sesuai konfigurasi.
+
+Script: `scripts/soal16_gojo.sh`, dijalankan di node Gojo (`10.86.1.4`).
